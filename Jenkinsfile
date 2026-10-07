@@ -38,7 +38,7 @@ pipeline {
 
     stage('Smoke test DEV') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3201/health'
+        sh 'sleep 3 && curl -fsS http://localhost:3001/health'
       }
     }
 
@@ -67,7 +67,7 @@ pipeline {
 
     stage('Smoke test PROD') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3202/health'
+        sh 'sleep 3 && curl -fsS http://localhost:3002/health'
       }
     }
 
@@ -86,6 +86,6 @@ pipeline {
 
   post {
     failure { echo 'Deployment failed. Check the stage logs above.' }
-    success { echo "Deployed ${IMAGE} to dev (3201) and prod (3202)." }
+    success { echo "Deployed ${IMAGE} to dev (3001) and prod (3002)." }
   }
 }
