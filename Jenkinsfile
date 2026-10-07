@@ -4,6 +4,14 @@ pipeline {
   environment {
     // Built once; the same tag is deployed to both dev and prod.
     IMAGE = "livepoll:${BUILD_NUMBER}"
+
+    // Port the app listens on INSIDE each container (passed as PORT)
+    DEV_APP_PORT  = '3001'
+    PROD_APP_PORT = '3002'
+
+    // Port published on the HOST (what you open in the browser)
+    DEV_HOST_PORT  = '3201'
+    PROD_HOST_PORT = '3202'
   }
 
   stages {
@@ -24,9 +32,9 @@ pipeline {
             docker rm -f livepoll-dev || true
             docker run -d --name livepoll-dev \
               --restart unless-stopped \
-              -p 3201:3001 \
+              -p $DEV_HOST_PORT:$DEV_APP_PORT \
               -e APP_ENV=dev \
-              -e PORT=3001 \
+              -e PORT=$DEV_APP_PORT \
               -e POLL_QUESTION="[DEV] Which language should we test?" \
               -e POLL_OPTIONS="Python,Go,Rust" \
               -e ADMIN_PASSWORD="$ADMIN_PW" \
@@ -38,12 +46,26 @@ pipeline {
 
     stage('Smoke test DEV') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3001/health'
+        // Jenkins runs inside a container, so "localhost" is NOT the host.
+        // Check from inside the app container instead, using the INTERNAL port.
+        sh '''
+          for i in $(seq 1 10); do
+            if docker exec livepoll-dev wget -qO- http://localhost:$DEV_APP_PORT/health; then
+              echo
+              echo "DEV is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "DEV did not become healthy. Container logs:"
+          docker logs livepoll-dev
+          exit 1
+        '''
       }
     }
 
     stage('Approve PROD') {
-      steps { input message: 'DEV looks good. Deploy to PROD?' }
+      steps { input message: "DEV is live on host port ${DEV_HOST_PORT}. Deploy to PROD?" }
     }
 
     stage('Deploy PROD') {
@@ -53,9 +75,9 @@ pipeline {
             docker rm -f livepoll-prod || true
             docker run -d --name livepoll-prod \
               --restart unless-stopped \
-              -p 3002:3002 \
+              -p $PROD_HOST_PORT:$PROD_APP_PORT \
               -e APP_ENV=prod \
-              -e PORT=3002 \
+              -e PORT=$PROD_APP_PORT \
               -e POLL_QUESTION="Which language should we adopt company-wide?" \
               -e POLL_OPTIONS="Python,Go,Rust,Java" \
               -e ADMIN_PASSWORD="$ADMIN_PW" \
@@ -67,7 +89,19 @@ pipeline {
 
     stage('Smoke test PROD') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3002/health'
+        sh '''
+          for i in $(seq 1 10); do
+            if docker exec livepoll-prod wget -qO- http://localhost:$PROD_APP_PORT/health; then
+              echo
+              echo "PROD is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PROD did not become healthy. Container logs:"
+          docker logs livepoll-prod
+          exit 1
+        '''
       }
     }
 
@@ -86,6 +120,6 @@ pipeline {
 
   post {
     failure { echo 'Deployment failed. Check the stage logs above.' }
-    success { echo "Deployed ${IMAGE} to dev (3001) and prod (3002)." }
+    success { echo "Deployed ${IMAGE}: dev on host port ${DEV_HOST_PORT}, prod on host port ${PROD_HOST_PORT}." }
   }
 }
