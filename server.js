@@ -1,138 +1,67 @@
 const express = require('express');
 const http = require('http');
-const path = require('path');
-const crypto = require('crypto');
 const { Server } = require('socket.io');
 
-// ---------------------------------------------------------------
-// 1. CONFIG: every setting comes from environment variables
-// ---------------------------------------------------------------
-function loadConfig(env = process.env) {
-  // ADMIN_TOKEN is a secret: no default, the app refuses to start without it
-  if (!env.ADMIN_TOKEN) {
-    throw new Error('ADMIN_TOKEN is required (pass it with: docker run -e ADMIN_TOKEN=...)');
-  }
-
-  const options = [...new Set(
-    (env.POLL_OPTIONS || 'Node.js,Python,Go').split(',').map((s) => s.trim()).filter(Boolean)
-  )];
-  if (options.length < 2) {
-    throw new Error('POLL_OPTIONS needs at least 2 comma-separated choices');
-  }
-
-  const logLevel = env.LOG_LEVEL || 'info';
-  if (!['debug', 'info'].includes(logLevel)) {
-    throw new Error('LOG_LEVEL must be "debug" or "info"');
-  }
-
-  return {
-    port: Number(env.PORT) || 3000,
-    appEnv: env.APP_ENV || 'dev',
-    question: env.POLL_QUESTION || 'Which language do you prefer?',
-    options,
-    logLevel,
-    buildNumber: env.BUILD_NUMBER || 'local',
-    adminToken: env.ADMIN_TOKEN,
-  };
+// Fail fast: nothing about the poll is hard-coded, so refuse to start without config.
+const required = ['POLL_QUESTION', 'POLL_OPTIONS', 'PORT', 'ADMIN_PASSWORD'];
+const missing = required.filter((k) => !process.env[k]);
+if (missing.length) {
+  console.error(`Missing required env var(s): ${missing.join(', ')}`);
+  process.exit(1);
 }
 
-// Only the non-secret settings are allowed to leave the server
-const publicConfig = (cfg) => ({
-  appEnv: cfg.appEnv,
-  question: cfg.question,
-  options: cfg.options,
+const { POLL_QUESTION, ADMIN_PASSWORD, APP_ENV = 'unknown' } = process.env;
+const PORT = parseInt(process.env.PORT, 10);
+const options = process.env.POLL_OPTIONS.split(',').map((s) => s.trim()).filter(Boolean);
+
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error(`Invalid PORT: ${process.env.PORT}`);
+  process.exit(1);
+}
+if (options.length < 2) {
+  console.error('POLL_OPTIONS must contain at least two comma-separated options');
+  process.exit(1);
+}
+
+const votes = Object.fromEntries(options.map((o) => [o, 0]));
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(express.json());
+app.use(express.static('public'));
+
+// The page reads its question/options from here, so the HTML is environment-neutral.
+app.get('/config', (_req, res) => {
+  res.json({ question: POLL_QUESTION, options, env: APP_ENV });
 });
 
-const sameToken = (a, b) => {
-  const h = (s) => crypto.createHash('sha256').update(String(s)).digest();
-  return crypto.timingSafeEqual(h(a), h(b));
-};
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', env: APP_ENV });
+});
 
-// ---------------------------------------------------------------
-// 2. APP: real-time voting with Socket.IO
-// ---------------------------------------------------------------
-function createApp(cfg) {
-  const app = express();
-  const server = http.createServer(app);
-  const io = new Server(server);
-
-  const log = {
-    info: (...a) => console.log('[info]', ...a),
-    debug: (...a) => { if (cfg.logLevel === 'debug') console.log('[debug]', ...a); },
-  };
-
-  const counts = Object.fromEntries(cfg.options.map((o) => [o, 0]));
-  const snapshot = () => ({
-    counts: { ...counts },
-    total: Object.values(counts).reduce((a, b) => a + b, 0),
-    viewers: io.engine.clientsCount,
-  });
-
-  app.use(express.static(path.join(__dirname, 'public')));
-
-  app.get('/health', (req, res) => res.json({ status: 'ok' }));
-  app.get('/config', (req, res) => res.json(publicConfig(cfg)));
-  app.get('/version', (req, res) => res.json({ build: cfg.buildNumber, env: cfg.appEnv }));
-  app.get('/api/results', (req, res) => res.json(snapshot()));
-
-  app.post('/reset', (req, res) => {
-    if (!sameToken(req.get('x-admin-token') || '', cfg.adminToken)) {
-      log.info('reset rejected: bad token');
-      return res.status(401).json({ error: 'unauthorized' });
-    }
-    cfg.options.forEach((o) => { counts[o] = 0; });
-    for (const s of io.sockets.sockets.values()) delete s.data.vote;
-    io.emit('reset');
-    io.emit('results', snapshot());
-    log.info('votes reset by admin');
-    res.json({ status: 'reset' });
-  });
-
-  io.on('connection', (socket) => {
-    log.debug('client connected', socket.id);
-    socket.emit('results', snapshot());
-    io.emit('results', snapshot());
-
-    socket.on('vote', (option) => {
-      if (!cfg.options.includes(option)) return;       // ignore unknown options
-      const previous = socket.data.vote;
-      if (previous === option) return;
-      if (previous) counts[previous] -= 1;              // switching vote
-      counts[option] += 1;
-      socket.data.vote = option;
-      log.debug('vote', socket.id, option);
-      io.emit('results', snapshot());
-    });
-
-    socket.on('disconnect', () => {
-      log.debug('client disconnected', socket.id);
-      setImmediate(() => io.emit('results', snapshot()));
-    });
-  });
-
-  return { app, server, io };
-}
-
-// ---------------------------------------------------------------
-// 3. START: fail fast with a clear message if config is wrong
-// ---------------------------------------------------------------
-if (require.main === module) {
-  let cfg;
-  try {
-    cfg = loadConfig();
-  } catch (err) {
-    console.error(`Config error: ${err.message}`);
-    process.exit(1);
+app.post('/admin/reset', (req, res) => {
+  if (!req.body || req.body.password !== ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'forbidden' });
   }
-  const { server } = createApp(cfg);
-  server.listen(cfg.port, () => {
-    // never print the token
-    console.log(`Live Poll [${cfg.appEnv}] build=${cfg.buildNumber} port=${cfg.port} log=${cfg.logLevel}`);
-    console.log(`Question: ${cfg.question} | Options: ${cfg.options.join(', ')}`);
-  });
-  const stop = () => server.close(() => process.exit(0));
-  process.on('SIGTERM', stop);
-  process.on('SIGINT', stop);
-}
+  options.forEach((o) => (votes[o] = 0));
+  io.emit('votes', votes);
+  res.json({ reset: true });
+});
 
-module.exports = { loadConfig, publicConfig, createApp };
+io.on('connection', (socket) => {
+  socket.emit('votes', votes); // new visitors immediately see current totals
+  socket.on('vote', (option) => {
+    if (Object.prototype.hasOwnProperty.call(votes, option)) {
+      votes[option] += 1;
+      io.emit('votes', votes); // push to everyone, no refresh needed
+    }
+  });
+});
+
+server.listen(PORT, () => console.log(`[${APP_ENV}] Live Poll listening on port ${PORT}`));
+
+const shutdown = () => server.close(() => process.exit(0));
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

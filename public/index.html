@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Poll</title>
+<style>
+  :root {
+    --bg: #eef2f6;
+    --ink: #14213d;
+    --muted: #5b6b85;
+    --line: #cfd8e3;
+    --bar: #2a9d8f;
+    --bar-lead: #e76f51;
+    --panel: #ffffff;
+    --badge-dev: #f4a261;
+    --badge-prod: #2a9d8f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  main { width: 100%; max-width: 640px; }
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--muted);
+  }
+  .badge.dev { background: var(--badge-dev); color: var(--ink); }
+  .badge.prod { background: var(--badge-prod); }
+  h1 {
+    font-size: clamp(1.6rem, 5vw, 2.3rem);
+    line-height: 1.2;
+    margin: 16px 0 24px;
+    max-width: 24ch;
+  }
+  .options { display: grid; gap: 12px; padding: 0; margin: 0; list-style: none; }
+  .option {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    text-align: left;
+    background: var(--panel);
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .option:hover { border-color: var(--ink); }
+  .option:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: var(--bar);
+    opacity: 0.22;
+    transition: width 0.5s ease;
+  }
+  .option.lead .fill { background: var(--bar-lead); opacity: 0.3; }
+  .row { position: relative; display: flex; justify-content: space-between; gap: 12px; }
+  .name { font-weight: 700; }
+  .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .status { margin-top: 20px; color: var(--muted); font-size: 0.95rem; }
+  .status.error { color: #b3261e; }
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <span id="badge" class="badge" hidden></span>
+  <h1 id="question">Loading poll…</h1>
+  <ul id="options" class="options"></ul>
+  <p id="status" class="status" role="status">Connecting…</p>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const els = {
+    badge: document.getElementById('badge'),
+    question: document.getElementById('question'),
+    options: document.getElementById('options'),
+    status: document.getElementById('status')
+  };
+  const buttons = {};
+  let socket;
+
+  function build(config) {
+    els.question.textContent = config.question;
+    document.title = config.question;
+    els.badge.textContent = config.env;
+    els.badge.className = 'badge ' + config.env;
+    els.badge.hidden = false;
+
+    config.options.forEach((name) => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.className = 'option';
+      btn.type = 'button';
+      btn.innerHTML =
+        '<span class="fill"></span>' +
+        '<span class="row"><span class="name"></span><span class="count">0 votes</span></span>';
+      btn.querySelector('.name').textContent = name;
+      btn.addEventListener('click', () => socket.emit('vote', name));
+      li.appendChild(btn);
+      els.options.appendChild(li);
+      buttons[name] = btn;
+    });
+  }
+
+  function render(votes) {
+    const total = Object.values(votes).reduce((a, b) => a + b, 0);
+    const top = Math.max(...Object.values(votes));
+    for (const [name, n] of Object.entries(votes)) {
+      const btn = buttons[name];
+      if (!btn) continue;
+      btn.querySelector('.fill').style.width = total ? (n / total) * 100 + '%' : '0';
+      btn.querySelector('.count').textContent = n + (n === 1 ? ' vote' : ' votes');
+      btn.classList.toggle('lead', total > 0 && n === top);
+    }
+    els.status.textContent = total + (total === 1 ? ' vote' : ' votes') + ' so far. Results update live.';
+  }
+
+  fetch('/config')
+    .then((r) => r.json())
+    .then((config) => {
+      build(config);
+      socket = io();
+      socket.on('votes', render);
+      socket.on('disconnect', () => {
+        els.status.textContent = 'Connection lost. Trying to reconnect…';
+        els.status.className = 'status error';
+      });
+      socket.on('connect', () => { els.status.className = 'status'; });
+    })
+    .catch(() => {
+      els.question.textContent = 'Poll unavailable';
+      els.status.textContent = 'Could not load the poll. Reload the page to try again.';
+      els.status.className = 'status error';
+    });
+</script>
+</body>
+</html>
