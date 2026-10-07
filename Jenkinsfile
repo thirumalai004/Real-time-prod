@@ -73,8 +73,18 @@ pipeline {
         }
     }
     post {
-        always  { sh 'docker logout || true; docker image prune -f' }
-        success { echo "Deployed ${params.TARGET_ENV} on port ${env.HOST_PORT}" }
-        failure { echo "Build #${env.BUILD_NUMBER} failed" }
+    success {
+        echo "Pipeline completed successfully for ${params.ENVIRONMENT}!"
+    }
+    failure {
+        node {
+            echo "Pipeline failed. Check logs for details."
+            // Put any failure shell commands here if needed
+        }
+    }
+    always {
+        node {
+            cleanWs()
+        }
     }
 }
