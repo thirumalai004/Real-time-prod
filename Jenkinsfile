@@ -24,7 +24,7 @@ pipeline {
             docker rm -f livepoll-dev || true
             docker run -d --name livepoll-dev \
               --restart unless-stopped \
-              -p 3001:3001 \
+              -p 3201:3001 \
               -e APP_ENV=dev \
               -e PORT=3001 \
               -e POLL_QUESTION="[DEV] Which language should we test?" \
@@ -38,7 +38,7 @@ pipeline {
 
     stage('Smoke test DEV') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3001/health'
+        sh 'sleep 3 && curl -fsS http://localhost:3201/health'
       }
     }
 
@@ -67,7 +67,7 @@ pipeline {
 
     stage('Smoke test PROD') {
       steps {
-        sh 'sleep 3 && curl -fsS http://localhost:3002/health'
+        sh 'sleep 3 && curl -fsS http://localhost:3202/health'
       }
     }
 
@@ -86,6 +86,6 @@ pipeline {
 
   post {
     failure { echo 'Deployment failed. Check the stage logs above.' }
-    success { echo "Deployed ${IMAGE} to dev (3001) and prod (3002)." }
+    success { echo "Deployed ${IMAGE} to dev (3201) and prod (3202)." }
   }
 }
